@@ -4,9 +4,8 @@ WORKDIR /usr/src/linkerd-failover
 COPY ./src ./src
 COPY ./Cargo.* .
 RUN cargo install --path .
-CMD ["linkerd-failover"]
 
 FROM debian:buster-slim
 RUN apt-get update && apt-get install -y libssl1.1 && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/cargo/bin/linkerd-failover /usr/local/bin/linkerd-failover
-CMD ["linkerd-failover"]
+ENTRYPOINT ["linkerd-failover"]
