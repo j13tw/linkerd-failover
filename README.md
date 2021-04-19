@@ -23,7 +23,8 @@ rate over some recent time window.
 ## Installation
 
 Just grab the latest [release] and set up a Trafficsplit and the failover
-controller as detailed in the example below.
+controller as detailed in the example below. Note the binary in the release is
+Linux-only.
 
 ## Usage
 
