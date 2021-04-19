@@ -1,56 +1,33 @@
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-
+use handlebars::{to_json, Handlebars};
 use hyper::{body, Client as HyperClient};
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::{
     api::{ListParams, Patch, PatchParams},
     Api, Client, CustomResource,
 };
-
-use handlebars::{
-        to_json, Context, Handlebars, Helper, JsonRender, Output, RenderContext, RenderError,
-};
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::value::{Map, Value as Json};
+use serde_json::value::Map;
 use std::{env, thread, time};
 use structopt::StructOpt;
 
 #[derive(Clone, Debug, Serialize, StructOpt)]
-#[structopt(about="Service failover operator for Kubernetes")]
+#[structopt(about = "Service failover operator for Kubernetes")]
 struct Opt {
-    #[structopt(
-        short,
-        long,
-        help = "Namespace for the Trafficsplit and services"
-    )]
+    #[structopt(short, long, help = "Namespace for the Trafficsplit and services")]
     namespace: String,
 
-    #[structopt(
-        long = "ts",
-        help = "Trafficsplit name"
-        )]
+    #[structopt(long = "ts", help = "Trafficsplit name")]
     ts_name: String,
 
-    #[structopt(
-        long,
-        help = "Service to watch"
-    )]
+    #[structopt(long, help = "Service to watch")]
     svc_watch: String,
 
-    #[structopt(
-        long,
-        help = "Service to fail-over to"
-    )]
+    #[structopt(long, help = "Service to fail-over to")]
     svc_failover: String,
 
-    #[structopt(
-        long,
-        help = "Success rate threshold triggering the fail-over [0-1]"
-    )]
+    #[structopt(long, help = "Success rate threshold triggering the fail-over [0-1]")]
     min_success_rate: f64,
 }
 
@@ -92,9 +69,16 @@ async fn main() -> Result<(), kube::Error> {
     let pods = api_pod
         .list(&ListParams::default().labels(format!("{}={}", key, val).as_str()))
         .await?;
-    let ips = pods.iter().map(|pod| pod.status.as_ref().unwrap().pod_ip.as_ref().unwrap()).collect();
+    let ips = pods
+        .iter()
+        .map(|pod| pod.status.as_ref().unwrap().pod_ip.as_ref().unwrap())
+        .collect();
     poll_metrics(ips, opt.min_success_rate).await?;
-    log::info!("Minimum success rate attained for {}, switching over {}", &opt.svc_watch, &opt.svc_failover);
+    log::info!(
+        "Minimum success rate attained for {}, switching over {}",
+        &opt.svc_watch,
+        &opt.svc_failover
+    );
     let mut backends = retrieve_backends(&opt.namespace, &opt.ts_name).await?;
     switch_backends(&mut backends, &opt.svc_watch, &opt.svc_failover);
     patch_ts(&opt.namespace, &opt.ts_name, backends).await?;
@@ -107,8 +91,7 @@ fn render_manifests(opt: Opt) {
 
     let mut hb = Handlebars::new();
     hb.set_strict_mode(true);
-    hb
-        .register_template_string("manifests", include_str!("templates/manifests.yml"))
+    hb.register_template_string("manifests", include_str!("templates/manifests.yml"))
         .unwrap();
     println!("{}", hb.render("manifests", &to_json(&data)).unwrap());
 }
