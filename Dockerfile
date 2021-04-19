@@ -1,8 +1,12 @@
-FROM rust:1.51.0-buster
+FROM rust:1.51.0-buster as builder
 
-WORKDIR /linkerd-failover
+WORKDIR /usr/src/linkerd-failover
 COPY ./src ./src
 COPY ./Cargo.* .
-RUN cargo build
+RUN cargo install --path .
+CMD ["linkerd-failover"]
 
-ENTRYPOINT ["/linkerd-failover/target/debug/linkerd-failover"]
+FROM debian:buster-slim
+RUN apt-get update && apt-get install -y libssl1.1 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/cargo/bin/linkerd-failover /usr/local/bin/linkerd-failover
+CMD ["linkerd-failover"]
