@@ -1,3 +1,4 @@
+use env_logger::Builder;
 use handlebars::{to_json, Handlebars};
 use hyper::{body, Client as HyperClient};
 use k8s_openapi::api::core::v1::{Pod, Service};
@@ -9,7 +10,7 @@ use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::value::Map;
-use std::{env, thread, time};
+use std::{env, time};
 use structopt::StructOpt;
 
 #[derive(Clone, Debug, Serialize, StructOpt)]
@@ -50,8 +51,9 @@ pub struct Backend {
 
 #[tokio::main]
 async fn main() -> Result<(), kube::Error> {
-    std::env::set_var("RUST_LOG", "info,kube=info");
-    env_logger::init();
+    let mut builder = Builder::new();
+    builder.parse_default_env();
+    builder.init();
 
     let opt = Opt::from_args();
     if env::var("OPERATOR").is_err() {
@@ -132,7 +134,7 @@ async fn poll_metrics(ips: Vec<&String>, min_success_rate: f64) -> Result<(), ku
         if success_rate < min_success_rate {
             break;
         }
-        tokio::task::sleep(time::Duration::from_secs(5)).await;
+        tokio::time::sleep(time::Duration::from_secs(5)).await;
     }
     Ok(())
 }
