@@ -65,6 +65,8 @@ spec:
         env:
         - name: OPERATOR
           value: "true"
+        - name: RUST_LOG
+          value: "info"
         image: ghcr.io/alpeb/linkerd-failover:latest
         imagePullPolicy: IfNotPresent
         name: linkerd-failover
