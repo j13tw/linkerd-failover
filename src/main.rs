@@ -132,7 +132,7 @@ async fn poll_metrics(ips: Vec<&String>, min_success_rate: f64) -> Result<(), ku
         if success_rate < min_success_rate {
             break;
         }
-        thread::sleep(time::Duration::from_secs(5));
+        tokio::task::sleep(time::Duration::from_secs(5)).await;
     }
     Ok(())
 }
