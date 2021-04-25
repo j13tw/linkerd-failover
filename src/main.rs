@@ -1,4 +1,9 @@
+#[macro_use]
+extern crate lazy_static;
+extern crate regex;
+
 use env_logger::Builder;
+use futures::future::join_all;
 use handlebars::{to_json, Handlebars, RenderError};
 use hyper::{body, Client as HyperClient};
 use k8s_openapi::api::core::v1::{Pod, Service};
@@ -12,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::Map;
 use std::{env, time};
 use structopt::StructOpt;
+use tokio::task::JoinHandle;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -96,16 +102,16 @@ async fn main() -> Result<(), Error> {
                 log::warn!("Pod doesn't have an IP");
             }
         })
-        .filter_map(|status| status.pod_ip.as_ref())
+        .filter_map(|status| status.pod_ip.clone())
         .collect();
-    poll_metrics(ips, opt.min_success_rate).await?;
+    poll_metrics(&ips, opt.min_success_rate).await?;
     log::info!(
         "Minimum success rate attained for {}, switching over {}",
         &opt.svc_watch,
         &opt.svc_failover
     );
     let mut backends = retrieve_backends(&opt.namespace, &opt.ts_name).await?;
-    switch_backends(&mut backends, &opt.svc_watch, &opt.svc_failover);
+    swap_backends(&mut backends, &opt.svc_watch, &opt.svc_failover);
     patch_ts(&opt.namespace, &opt.ts_name, backends).await?;
     Ok(())
 }
@@ -122,43 +128,73 @@ fn render_manifests(opt: Opt) -> Result<(), RenderError> {
         .map(|x| println!("{}", x))
 }
 
-async fn poll_metrics(ips: Vec<&String>, min_success_rate: f64) -> Result<(), Error> {
-    let client = HyperClient::new();
-    let re_success: Regex = Regex::new(
-        r#"(?m)^response_total\{.*target_addr=".*:(\d+)".*classification="success".* (\d+)"#,
-    )
-    .expect("Failed parsing re_success");
-    let re_failure: Regex = Regex::new(
-        r#"(?m)^response_total\{.*target_addr=".*:(\d+)".*classification="failure".* (\d+)"#,
-    )
-    .expect("Failed parsing re_failure");
+async fn poll_metrics(ips: &Vec<String>, min_success_rate: f64) -> Result<(), Error> {
     loop {
-        let mut total_success = 0.0;
-        let mut total_failure = 0.0;
-        for ip in &ips {
-            let uri = format!("http://{}:4191/metrics", ip).parse()?;
-            let resp = client.get(uri).await?;
-            let bytes = body::to_bytes(resp.into_body()).await?;
-            let body = String::from_utf8(bytes.to_vec())?;
-            for cap in re_success.captures_iter(&body) {
-                if &cap[1] == "4191" {
-                    continue;
+        let mut tasks: Vec<JoinHandle<Result<(f64, f64), Error>>> = Vec::new();
+        for ip in ips {
+            let ip = ip.clone();
+            let task = tokio::task::spawn(async move {
+                let mut success = 0.0;
+                let mut failure = 0.0;
+
+                let uri = format!("http://{}:4191/metrics", ip).parse().map_err(|e| {
+                    log::warn!("Error parsing url: {}", e);
+                    e
+                })?;
+                let client = HyperClient::new();
+                let resp = client.get(uri).await.map_err(|e| {
+                    log::warn!("Error fetching uri: {}", e);
+                    e
+                })?;
+                let bytes = body::to_bytes(resp.into_body()).await.map_err(|e| {
+                    log::warn!("Error retrieving response body: {}", e);
+                    e
+                })?;
+                let body = String::from_utf8(bytes.to_vec()).map_err(|e| {
+                    log::warn!("Error parsing response body: {}", e);
+                    e
+                })?;
+
+                lazy_static! {
+                    static ref RE_SUCCESS: Regex = Regex::new(
+                        r#"(?m)^response_total\{.*target_addr=".*:(\d+)".*classification="success".* (\d+)"#,
+                    )
+                    .expect("Failed parsing RE_SUCCESS");
+                    static ref RE_FAILURE: Regex = Regex::new(
+                        r#"(?m)^response_total\{.*target_addr=".*:(\d+)".*classification="failure".* (\d+)"#,
+                    )
+                    .expect("Failed parsing RE_FAILURE");
                 }
-                match cap[2].parse::<f64>() {
-                    Ok(x) => total_success = total_success + x,
-                    Err(x) => log::warn!("Invalid metric value: {}: {}", cap[2].to_string(), x),
+
+                for cap in RE_SUCCESS.captures_iter(&body) {
+                    if &cap[1] == "4191" {
+                        continue;
+                    }
+                    match cap[2].parse::<f64>() {
+                        Ok(x) => success = success + x,
+                        Err(x) => log::warn!("Invalid metric value: {}: {}", cap[2].to_string(), x),
+                    }
                 }
-            }
-            for cap in re_failure.captures_iter(&body) {
-                if &cap[1] == "4191" {
-                    continue;
+                for cap in RE_FAILURE.captures_iter(&body) {
+                    if &cap[1] == "4191" {
+                        continue;
+                    }
+                    match cap[2].parse::<f64>() {
+                        Ok(x) => failure = failure + x,
+                        Err(x) => log::warn!("Invalid metric value: {}: {}", cap[2].to_string(), x),
+                    }
                 }
-                match cap[2].parse::<f64>() {
-                    Ok(x) => total_failure = total_failure + x,
-                    Err(x) => log::warn!("Invalid metric value: {}: {}", cap[2].to_string(), x),
-                }
-            }
+
+                Ok((success, failure))
+            });
+            tasks.push(task);
         }
+        let results = join_all(tasks).await;
+        let metrics = results
+            .iter()
+            .filter_map(|x| x.as_ref().ok().and_then(|x| x.as_ref().ok()));
+        let (total_success, total_failure) =
+            metrics.fold((0.0, 0.0), |acc, x| (acc.0 + x.0, acc.1 + x.1));
         let success_rate = total_success / (total_success + total_failure);
         log::info!("Success rate: {:.0}%", success_rate * 100.0);
         if success_rate < min_success_rate {
@@ -176,7 +212,7 @@ async fn retrieve_backends(ns: &str, ts: &str) -> Result<Vec<Backend>, kube::Err
     Ok(ts.spec.backends)
 }
 
-fn switch_backends(backends: &mut Vec<Backend>, watched: &str, failover: &str) {
+fn swap_backends(backends: &mut Vec<Backend>, watched: &str, failover: &str) {
     for backend in backends {
         if backend.service == watched {
             backend.weight = 0
