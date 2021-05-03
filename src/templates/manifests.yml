@@ -1,0 +1,74 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: linkerd-failover
+  labels:
+    linkerd.io/extension: failover
+  annotations:
+    linkerd.io/inject: enabled
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: failover
+  namespace: linkerd-failover
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: linkerd-failover
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services"]
+  verbs: ["list", "get", "watch"]
+- apiGroups: ["split.smi-spec.io"]
+  resources: ["trafficsplits"]
+  verbs: ["list", "get", "watch", "patch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: linkerd-failover
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: linkerd-failover
+subjects:
+- kind: ServiceAccount
+  name: failover
+  namespace: linkerd-failover
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/name: failover
+    app.kubernetes.io/version: v0.9.0
+    component: failover
+  name: failover
+  namespace: linkerd-failover
+spec:
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: disabled
+      labels:
+        component: failover
+    spec:
+      containers:
+      - args:
+        - --namespace={{args.namespace}}
+        - --ts={{args.ts_name}}
+        - --svc-watch={{args.svc_watch}}
+        - --svc-failover={{args.svc_failover}}
+        - --min-success-rate={{args.min_success_rate}}
+        env:
+        - name: OPERATOR
+          value: "true"
+        - name: RUST_LOG
+          value: "info"
+        image: ghcr.io/alpeb/linkerd-failover:latest
+        imagePullPolicy: IfNotPresent
+        name: linkerd-failover
+      restartPolicy: Never
+      serviceAccountName: failover
